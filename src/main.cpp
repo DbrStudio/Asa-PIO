@@ -10,10 +10,10 @@
 struct Vec3 {
   float x, y, z;
 };
-struct Odom {
+struct Odom { // Acc: m/s², Rot: Rad/s, Temp: DegC
   String timestamp;
   float rpms[4], temp;
-  Vec3 acceleration, rotation;
+  Vec3 acceleration, rotation; 
 };
 Adafruit_MPU6050 mpu;
 
@@ -205,11 +205,11 @@ void sendSerialData(float* rpms) {
     odom.rpms[i] = rpms[i];
   }
 
-  String dataString = String(odom.timestamp) + ",m1_" + odom.rpms[0] + ",m2_" + odom.rpms[1] +
-                      ",m3_" + odom.rpms[2] + ",m4_" + odom.rpms[3] + ",acc_x_" +
-                      odom.acceleration.x + ",acc_y_" + odom.acceleration.y + ",acc_z_" +
-                      odom.acceleration.z + ",rot_x" + odom.rotation.x + ",rot_y" +
-                      odom.rotation.y + ",rot_z" + odom.rotation.z + ",temp_c_" + odom.temp;
+  String dataString = String(odom.timestamp) + ",m1=" + odom.rpms[0] + ",m2=" + odom.rpms[1] +
+                      ",m3=" + odom.rpms[2] + ",m4=" + odom.rpms[3] + ",acc_x=" +
+                      odom.acceleration.x + ",acc_y=" + odom.acceleration.y + ",acc_z=" +
+                      odom.acceleration.z + ",rot_x=" + odom.rotation.x + ",rot_y=" +
+                      odom.rotation.y + ",rot_z=" + odom.rotation.z + ",temp_c=" + odom.temp;
 
   Serial.print(dataString);
   uint16_t hash = calculateHash(dataString);
