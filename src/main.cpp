@@ -1,21 +1,18 @@
 #include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
 #include <Adafruit_MotorShield.h>
-#include <SPI.h>
-#include <Wire.h>
-
+#include <Adafruit_Sensor.h>
 #include <AutoPID.h>
 #include <LowPass.h>
-
+#include <SPI.h>
 #include <TimeLib.h>
-
+#include <Wire.h>
 
 struct Vec3 {
-  float x,y,z;
+  float x, y, z;
 };
 struct Odom {
   String timestamp;
-  float rpms[4],temp;
+  float rpms[4], temp;
   Vec3 acceleration, rotation;
 };
 Adafruit_MPU6050 mpu;
@@ -27,17 +24,15 @@ char tempChars[numChars];
 boolean newData = false;
 int motorCommands[4];
 
-
 // Initial direction for motors
 int lastDirection[4] = {FORWARD, FORWARD, FORWARD, FORWARD};
 
 // Create Adafruit Motor Shield object with I2C address 0x60
 Adafruit_MotorShield AFMS = Adafruit_MotorShield(0x60);
 Adafruit_DCMotor* motor1 = AFMS.getMotor(1);
-Adafruit_DCMotor* motor2 = AFMS.getMotor(2); 
-Adafruit_DCMotor* motor3 = AFMS.getMotor(3); 
-Adafruit_DCMotor* motor4 = AFMS.getMotor(4); 
-
+Adafruit_DCMotor* motor2 = AFMS.getMotor(2);
+Adafruit_DCMotor* motor3 = AFMS.getMotor(3);
+Adafruit_DCMotor* motor4 = AFMS.getMotor(4);
 
 // -------- RPM Sensor -----------
 const byte sensor1 = A0;
@@ -45,12 +40,12 @@ const byte sensor2 = A1;
 const byte sensor3 = A2;
 const byte sensor4 = A3;
 
-struct EncoderCounts // Variables to count RPM pulses
+struct EncoderCounts  // Variables to count RPM pulses
 {
-volatile int countA;
-volatile int countB;
-volatile int countC;
-volatile int countD;  
+  volatile int countA;
+  volatile int countB;
+  volatile int countC;
+  volatile int countD;
 };
 
 EncoderCounts encoderCounts;
@@ -75,7 +70,8 @@ LowPass<2> lp_filters[4] = {
 #define KD 1
 
 // Define input, setpoint, and output variables for PID controllers of each motor
-double input1, input2, input3, input4, setpoint1, setpoint2, setpoint3, setpoint4, output1, output2, output3, output4;
+double input1, input2, input3, input4, setpoint1, setpoint2, setpoint3, setpoint4, output1, output2,
+    output3, output4;
 
 // Create PID controllers for each motor
 AutoPID motor1PID(&input1, &setpoint1, &output1, OUTPUT_MIN, OUTPUT_MAX, KP, KI, KD);
@@ -85,8 +81,7 @@ AutoPID motor4PID(&input4, &setpoint4, &output4, OUTPUT_MIN, OUTPUT_MAX, KP, KI,
 
 bool timeSynced = false;
 
-
-void readMPU(Vec3 &accel, Vec3 &gyro, float &temp){
+void readMPU(Vec3& accel, Vec3& gyro, float& temp) {
   sensors_event_t a, g, temp_event;
   mpu.getEvent(&a, &g, &temp_event);
 
@@ -94,36 +89,36 @@ void readMPU(Vec3 &accel, Vec3 &gyro, float &temp){
   accel.y = a.acceleration.y;
   accel.z = a.acceleration.z;
 
-  gyro.x = g.gyro.x; 
+  gyro.x = g.gyro.x;
   gyro.y = g.gyro.y;
   gyro.z = g.gyro.z;
 
   temp = temp_event.temperature;
 }
-String getISOTimestamp(){
+String getISOTimestamp() {
   char buf[30];
   unsigned long ms = millis() % 1000;
-  sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d.%03luZ", year(), month(), day(), hour(), minute(), second(), ms);
+  sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d.%03luZ", year(), month(), day(), hour(), minute(),
+          second(), ms);
   return String(buf);
 }
 
-
 // Function to calculate RPMs from pulse counts
 float* calculateRPMs(int cA, int cB, int cC, int cD) {
-  static float rpms[4];                              // Static array to store RPM values
-// int totalCounts = cA + cB + cC + cD;               // Total counts from all sensors
+  static float rpms[4];  // Static array to store RPM values
+  // int totalCounts = cA + cB + cC + cD;               // Total counts from all sensors
   float factor = 60000.0 / (millis() - lastMillis);  // Factor to convert counts to RPM
   // Calculate RPM for each sensor and store in the rpms array
   rpms[0] = (cA / 40.0) * factor;  // Convert counts to RPMs
   rpms[1] = (cB / 40.0) * factor;
   rpms[2] = (cC / 40.0) * factor;
-  rpms[3] = (cD / 40.0) * factor; 
-  lastMillis = millis();           // Update lastMillis for the next RPM calculation
-  encoderCounts.countA = 0;                      // Reset counts for sensors
-  encoderCounts.countB = 0;                      
-  encoderCounts.countC = 0;                      
-  encoderCounts.countD = 0;                      
-  return rpms;                     
+  rpms[3] = (cD / 40.0) * factor;
+  lastMillis = millis();     // Update lastMillis for the next RPM calculation
+  encoderCounts.countA = 0;  // Reset counts for sensors
+  encoderCounts.countB = 0;
+  encoderCounts.countC = 0;
+  encoderCounts.countD = 0;
+  return rpms;
 }
 
 void getDirectionAndSpeed() {
@@ -135,67 +130,66 @@ void getDirectionAndSpeed() {
     } else {
       lastDirection[i] = RELEASE;
     }
-  
-   // Set the setpoint to the absolute value of the received data
-  switch (i) {
-    case 0:
-      setpoint1 = abs(motorCommands[i]);
-      break;
-    case 1:
-      setpoint2 = abs(motorCommands[i]);
-      break;
-    case 2:
-      setpoint3 = abs(motorCommands[i]);
-      break;
-    case 3:
-      setpoint4 = abs(motorCommands[i]);
-      break;
+
+    // Set the setpoint to the absolute value of the received data
+    switch (i) {
+      case 0:
+        setpoint1 = abs(motorCommands[i]);
+        break;
+      case 1:
+        setpoint2 = abs(motorCommands[i]);
+        break;
+      case 2:
+        setpoint3 = abs(motorCommands[i]);
+        break;
+      case 3:
+        setpoint4 = abs(motorCommands[i]);
+        break;
     }
   }
 }
 
 void recvWithStartEndMarkers() {
-    static boolean recvInProgress = false;
-    static byte ndx = 0;
-    char startMarker = '<';
-    char endMarker = '>';
-    char rc;
+  static boolean recvInProgress = false;
+  static byte ndx = 0;
+  char startMarker = '<';
+  char endMarker = '>';
+  char rc;
 
-    while (Serial.available() > 0 && newData == false) {
-        rc = Serial.read();
+  while (Serial.available() > 0 && newData == false) {
+    rc = Serial.read();
 
-        if (recvInProgress == true) {
-            if (rc != endMarker) {
-                receivedChars[ndx] = rc;
-                ndx++;
-                if (ndx >= numChars) {
-                    ndx = numChars - 1;
-                }
-            }
-            else {
-                receivedChars[ndx] = '\0';
-                recvInProgress = false;
-                ndx = 0;
-                newData = true;
-            }
+    if (recvInProgress == true) {
+      if (rc != endMarker) {
+        receivedChars[ndx] = rc;
+        ndx++;
+        if (ndx >= numChars) {
+          ndx = numChars - 1;
         }
-
-        else if (rc == startMarker) {
-            recvInProgress = true;
-        }
+      } else {
+        receivedChars[ndx] = '\0';
+        recvInProgress = false;
+        ndx = 0;
+        newData = true;
+      }
     }
+
+    else if (rc == startMarker) {
+      recvInProgress = true;
+    }
+  }
 }
 
 void parseData() {
-    char * strtokIndx;
-    strtokIndx = strtok(receivedChars, ",");
-    for (int i = 0; i < 4; i++) {
-        motorCommands[i] = atoi(strtokIndx);
-        strtokIndx = strtok(NULL, ",");
-    }
+  char* strtokIndx;
+  strtokIndx = strtok(receivedChars, ",");
+  for (int i = 0; i < 4; i++) {
+    motorCommands[i] = atoi(strtokIndx);
+    strtokIndx = strtok(NULL, ",");
+  }
 }
 
-uint16_t calculateHash(String &data) {
+uint16_t calculateHash(String& data) {
   uint16_t hash = 0;
   for (unsigned int i = 0; i < data.length(); i++) {
     hash = ((hash << 5) + hash) + char(data[i]);
@@ -204,35 +198,33 @@ uint16_t calculateHash(String &data) {
 }
 
 void sendSerialData(float* rpms) {
-  
   Odom odom;
   odom.timestamp = getISOTimestamp();
   readMPU(odom.acceleration, odom.rotation, odom.temp);
   for (unsigned int i = 0; i < 4; i++) {
     odom.rpms[i] = rpms[i];
   }
-  
-  
-  
-  String dataString = String(odom.timestamp) + ",m1_" + odom.rpms[0] + ",m2_" + odom.rpms[1] + ",m3_" + odom.rpms[2] + ",m4_" + odom.rpms[3] + 
-                      ",acc_x_" + odom.acceleration.x + ",acc_y_" + odom.acceleration.y + ",acc_z_" + odom.acceleration.z + 
-                      ",rot_x" + odom.rotation.x + ",rot_y" + odom.rotation.y + ",rot_z" + odom.rotation.z + 
-                      ",temp_c_" + odom.temp;
-  
+
+  String dataString = String(odom.timestamp) + ",m1_" + odom.rpms[0] + ",m2_" + odom.rpms[1] +
+                      ",m3_" + odom.rpms[2] + ",m4_" + odom.rpms[3] + ",acc_x_" +
+                      odom.acceleration.x + ",acc_y_" + odom.acceleration.y + ",acc_z_" +
+                      odom.acceleration.z + ",rot_x" + odom.rotation.x + ",rot_y" +
+                      odom.rotation.y + ",rot_z" + odom.rotation.z + ",temp_c_" + odom.temp;
+
   Serial.print(dataString);
   uint16_t hash = calculateHash(dataString);
-  
+
   Serial.println("," + String(hash));
 }
 
-void setup(void){
-  AFMS.begin();   
+void setup(void) {
+  AFMS.begin();
   Serial.begin(115200);
   Serial.println(F("ASA, wake up!"));
 
   Serial.println(F("Serial connected. Waiting for TimeSync."));
-  while (!timeSynced){
-    if (Serial.available() >= 11) {  
+  while (!timeSynced) {
+    if (Serial.available() >= 11) {
       String input = Serial.readStringUntil('\n');
       if (input.length() == 11 && input.startsWith("T")) {
         setTime(input.substring(1).toInt());
@@ -250,8 +242,9 @@ void setup(void){
   pinMode(sensor3, INPUT);
   pinMode(sensor4, INPUT);
   Serial.println(F("Pins set. Enabling Pin Change Interrupt on pin A0-A3."));
-  PCICR |= (1 << PCIE1);                                                    // enable PCINT[14:8] (PCIE1)
-  PCMSK1 |= (1 << PCINT3) | (1 << PCINT2) | (1 << PCINT1) | (1 << PCINT0);  // enable PCINT[3:0] (PCMSK1)
+  PCICR |= (1 << PCIE1);  // enable PCINT[14:8] (PCIE1)
+  PCMSK1 |=
+      (1 << PCINT3) | (1 << PCINT2) | (1 << PCINT1) | (1 << PCINT0);  // enable PCINT[3:0] (PCMSK1)
   // initialize the RPM counter
   oldPortVal = PINC & B00001111;
   Serial.println(F("PCIR enabled, RPM counter initialized."));
@@ -268,7 +261,9 @@ void setup(void){
   Serial.println(F("MPU6050 Startup."));
   if (!mpu.begin()) {
     Serial.println(F("Failed to find MPU6050 chip"));
-    while (1) {delay(10);}
+    while (1) {
+      delay(10);
+    }
   }
   Serial.println(F("MPU6050 Found!"));
 
@@ -290,24 +285,26 @@ void setup(void){
 }
 
 void loop() {
-
   recvWithStartEndMarkers();
   if (newData == true) {
-      parseData();
-      newData = false;
+    parseData();
+    newData = false;
   }
   getDirectionAndSpeed();
 
-  float* rpmValues = calculateRPMs(encoderCounts.countA, encoderCounts.countB, encoderCounts.countC, encoderCounts.countD);
+  float* rpmValues = calculateRPMs(encoderCounts.countA, encoderCounts.countB, encoderCounts.countC,
+                                   encoderCounts.countD);
 
   float smoothedRPMs[4];
-    for (int i = 0; i < 4; i++) {
-    smoothedRPMs[i] = lp_filters[i].filt(rpmValues[i]);  // Applies lowpassfilter to the RPM array and writes it to a new array called smoothedRPMs
+  for (int i = 0; i < 4; i++) {
+    smoothedRPMs[i] =
+        lp_filters[i].filt(rpmValues[i]);  // Applies lowpassfilter to the RPM array and writes it
+                                           // to a new array called smoothedRPMs
   }
 
   sendSerialData(smoothedRPMs);
 
-// Update PID inputs
+  // Update PID inputs
   input1 = smoothedRPMs[0];
   input2 = smoothedRPMs[1];
   input3 = smoothedRPMs[2];
@@ -331,9 +328,7 @@ void loop() {
   motor3->run(lastDirection[2]);
   motor4->run(lastDirection[3]);
 
-
   delay(50);
-
 }
 
 // Interrupt Service Routine for pin change black magic and RPM counting
