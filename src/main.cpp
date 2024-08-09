@@ -1,10 +1,32 @@
 #include <Adafruit_MotorShield.h>
 #include <AutoPID.h>
-#include <Wire.h>
 #include <LowPass.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <TimeLib.h>
+// #include <MPU6050_6Axis_MotionApps20.h>
+// #include <I2Cdev.h>
+
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+    #include "Wire.h"
+#endif
+
+Adafruit_MPU6050 mpu;
+// MPU6050 mpu;
+
+#define EARTH_GRAVITY_MS2 9.80665  // m/s2
+#define DEG_TO_RAD        0.017453292519943295769236907684886
+#define RAD_TO_DEG        57.295779513082320876798154814105
+
+// #include <Adafruit_MPU6050.h>
+// #include <Adafruit_Sensor.h>
+
 
 // Initial direction for motors
-int lastDirection = FORWARD;  // Assuming FORWARD is the initial direction
+int lastDirection[4] = {FORWARD, FORWARD, FORWARD, FORWARD};  // Assuming FORWARD is the initial direction
 
 // Create Adafruit Motor Shield object
 Adafruit_MotorShield AFMS = Adafruit_MotorShield(0x60);  // Create Motor Shield object with I2C address 0x60
@@ -20,27 +42,33 @@ const byte sensor2 = A1;
 const byte sensor3 = A2;
 const byte sensor4 = A3;
 
-volatile int countA, countB, countC, countD;  // Variables to count RPM pulses
+struct EncoderCounts
+{
+volatile int countA;
+volatile int countB;
+volatile int countC;
+volatile int countD;  // Variables to count RPM pulses
+};
 
-volatile uint8_t
-    oldPortVal;  // Variable to store previous port state for detecting changes
+EncoderCounts encoderCounts;
 
-unsigned long lastMillis =
-    0;  // Variable to store last millis for RPM calculation
+
+volatile uint8_t oldPortVal;  // Variable to store previous port state for detecting changes
+
+unsigned long lastMillis = 0;  // Variable to store last millis for RPM calculation
 // ----------------------------------------------
 
 // ------------I2C variable declarations------------------
-volatile uint8_t command = 0;  // Received command variable
-volatile bool i2cDataReceived =
-    false;  // Flag to indicate if I2C data has been received
+volatile uint8_t command = 0;           // Received command variable
+volatile bool i2cDataReceived = false;  // Flag to indicate if I2C data has been received
 
 // Struct for receiving Data:
 struct CommandData {
   uint8_t registerAddr;  // throwaway variable to store register address (could be used later for different functions?)
-  int16_t m1;            // desired RPM for each motor.
-  int16_t m2;
-  int16_t m3;
-  int16_t m4;
+  int8_t m1;             // desired RPM for each motor.
+  int8_t m2;
+  int8_t m3;
+  int8_t m4;
 } commandData;
 
 // Filter instances for each Motor
@@ -69,24 +97,62 @@ AutoPID motor2PID(&input2, &setpoint2, &output2, OUTPUT_MIN, OUTPUT_MAX, KP, KI,
 AutoPID motor3PID(&input3, &setpoint3, &output3, OUTPUT_MIN, OUTPUT_MAX, KP, KI, KD);
 AutoPID motor4PID(&input4, &setpoint4, &output4, OUTPUT_MIN, OUTPUT_MAX, KP, KI, KD);
 
-// int motorSpeeds[4] = {0, 0, 0, 0}; // Array to store motor speeds for each
+// int motorCommands[4] = {0, 0, 0, 0}; // Array to store motor Commands for each
 // motor
 
-void setup() {
-  AFMS.begin();  // Initialize the Motor Shield
-  Wire.begin(0x8);  // Initialize the I2C communication address 0x8
-  Wire.onReceive(receiveEvent); // Call receiveEvent when data is received
-  Serial.begin(9600);  // Initialize Serial comms
+// Gyroscope object
+// Adafruit_MPU6050 mpu;
 
-  // Set sensor pins to INPUT. INPUT_PULLUP caused weird behavior. this works I
-  // guess.
+
+float* calculateRPMs(int cA, int cB, int cC, int cD);
+void receiveEvent(int howMany);
+unsigned long lastTime = 0;
+
+
+const byte numChars = 32;
+char receivedChars[numChars];
+char tempChars[numChars];
+boolean newData = false;
+
+int motorCommands[4];
+
+bool timeSynced = false;
+
+
+void parseData();
+void recvWithStartEndMarkers();
+void getDirectionAndSpeed();
+String getISOTimestamp();
+uint16_t calculateHash();
+void readGyroData();
+void sendSerialData(float* rpms);
+
+void setup(){
+  AFMS.begin();                  
+  Serial.begin(115200);
+
+
+
+  Serial.println("Serial connected. Waiting for TimeSync.");
+  while (!timeSynced){
+    if (Serial.available() >= 11) {  
+      String input = Serial.readStringUntil('\n');
+      if (input.length() == 11 && input.startsWith("T")) {
+        setTime(input.substring(1).toInt());
+        timeSynced = true;
+        Serial.println("ACK");
+      }
+    }
+  }
+
+  // Set sensor pins to INPUT. INPUT_PULLUP caused weird behavior. this works I guess.
   pinMode(sensor1, INPUT);
   pinMode(sensor2, INPUT);
   pinMode(sensor3, INPUT);
   pinMode(sensor4, INPUT);
 
   // Pin Register stuff, enable Pin Change Interrupt on pin A0 - A3 basically.
-  PCICR |= (1 << PCIE1);  // enable PCINT[14:8] (PCIE1)
+  PCICR |= (1 << PCIE1);                                                    // enable PCINT[14:8] (PCIE1)
   PCMSK1 |= (1 << PCINT3) | (1 << PCINT2) | (1 << PCINT1) | (1 << PCINT0);  // enable PCINT[3:0] (PCMSK1)
   // initialize the RPM counter
   oldPortVal = PINC & B00001111;
@@ -101,67 +167,46 @@ void setup() {
   setpoint3 = 0;
   setpoint4 = 0;
 
-  Serial.println("Arduino initialized");
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) {
+      delay(10);
+    }
+  }
+  Serial.println("MPU6050 Found!");
+
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  Serial.print("Accelerometer range set to: +-8G");
+
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  Serial.print("Gyro range set to: +- 500 deg/s");
+  
+  // mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  // Serial.print("Filter bandwidth set to: 21 Hz");
+
+  Serial.println("Arduino Initialized");
+  Serial.print("The time is: ");
+  Serial.println(getISOTimestamp());
+  Serial.println("Enter data in this format (int8_t) <m1, m2, m3, m4>");
 }
 
 void loop() {
-
-  // Set speed of all motors to the last speed value
-  motor1->setSpeed((int)output1);  // Set speed for motor 1
-  motor2->setSpeed((int)output2);  // Set speed for motor 2
-  motor3->setSpeed((int)output3);  // Set speed for motor 3
-  motor4->setSpeed((int)output4);  // Set speed for motor 4
-
-  // Set direction of motors
-  motor1->run(lastDirection);
-  motor2->run(lastDirection);
-  motor3->run(lastDirection);
-  motor4->run(lastDirection);
+  recvWithStartEndMarkers();
+    if (newData == true) {
+        parseData();
+        newData = false;
+    }
+    getDirectionAndSpeed();
 
   // Calculate RPM values
-  float* rpmValues = calculateRPMs(countA, countB, countC, countD);
+  float* rpmValues = calculateRPMs(encoderCounts.countA, encoderCounts.countB, encoderCounts.countC, encoderCounts.countD);
 
   // Update low-pass filters with new sensor readings
   float smoothedRPMs[4];
   for (int i = 0; i < 4; i++) {
-    smoothedRPMs[i] = lp_filters[i].filt(
-        rpmValues[i]);  // Applies lowpassfilter to the RPM array and writes it
-                        // to a new array called smoothedRPMs
+    smoothedRPMs[i] = lp_filters[i].filt(rpmValues[i]);  // Applies lowpassfilter to the RPM array and writes it to a new array called smoothedRPMs
   }
-
-  // Print setpoints and smoothed RPMs for debugging
-  Serial.print("Setpoint1:");
-  Serial.print(setpoint1);
-  Serial.print(",");
-  // Serial.print("Motor_1:");
-  // Serial.print(rpmValues[0]);
-  // Serial.print(",");
-  Serial.print("Smoothed_1:");
-  Serial.println(smoothedRPMs[0]);
-  Serial.print("Setpoint2:");
-  Serial.print(setpoint2);
-  Serial.print(",");
-  // Serial.print("Motor_2:");
-  // Serial.print(rpmValues[1]);
-  // Serial.print(",");
-  Serial.print("Smoothed_2:");
-  Serial.println(smoothedRPMs[1]);
-  Serial.print("Setpoint3:");
-  Serial.print(setpoint3);
-  Serial.print(",");
-  // Serial.print("Motor_3:");
-  // Serial.print(rpmValues[2]);
-  // Serial.print(",");
-  Serial.print("Smoothed_3:");
-  Serial.println(smoothedRPMs[2]);
-  Serial.print("Setpoint4:");
-  Serial.print(setpoint4);
-  Serial.print(",");
-  // Serial.print("Motor_4:");
-  // Serial.print(rpmValues[3]);
-  // Serial.print(",");
-  Serial.print("Smoothed_4:");
-  Serial.println(smoothedRPMs[3]);
+  sendSerialData(smoothedRPMs);
 
   // Update PID inputs
   input1 = smoothedRPMs[0];
@@ -175,7 +220,19 @@ void loop() {
   motor3PID.run();
   motor4PID.run();
 
-  delay(100);
+  // Set speed of all motors to the last speed value
+  motor1->setSpeed((int)output1);
+  motor2->setSpeed((int)output2);
+  motor3->setSpeed((int)output3);
+  motor4->setSpeed((int)output4);
+
+  // Set direction of motors
+  motor1->run(lastDirection[0]);
+  motor2->run(lastDirection[1]);
+  motor3->run(lastDirection[2]);
+  motor4->run(lastDirection[3]);
+
+  delay(20);
 }
 
 // Interrupt Service Routine for pin change black magic and RPM counting
@@ -186,49 +243,149 @@ ISR(PCINT1_vect) {
     return;  // If no pins have changed, exit ISR
   }
 
-  // Increment counts based on which pins have changed
-  if (changedPins & B00000001) {  // If pin A0 changed
-    countA++;
+  if (changedPins & B00000001) {
+    encoderCounts.countA++;
   }
-  if (changedPins & B00000010) {  // If pin A1 changed
-    countB++;
+  if (changedPins & B00000010) {
+    encoderCounts.countB++;
   }
-  if (changedPins & B00000100) {  // If pin A2 changed
-    countC++;
+  if (changedPins & B00000100) {
+    encoderCounts.countC++;
   }
-  if (changedPins & B00001000) {  // If pin A3 changed
-    countD++;
+  if (changedPins & B00001000) {
+    encoderCounts.countD++;
   }
 
-  oldPortVal =
-      (PINC & B00001111);  // Update oldPortVal for the next ISR iteration
+  oldPortVal = (PINC & B00001111);  // Update oldPortVal for the next ISR iteration
 }
 
 // Function to calculate RPMs from pulse counts
 float* calculateRPMs(int cA, int cB, int cC, int cD) {
-  static float rpms[4];                 // Static array to store RPM values
-  int totalCounts = cA + cB + cC + cD;  // Total counts from all sensors
-  float factor =
-      60000.0 / (millis() - lastMillis);  // Factor to convert counts to RPM
+  static float rpms[4];                              // Static array to store RPM values
+// int totalCounts = cA + cB + cC + cD;               // Total counts from all sensors
+  float factor = 60000.0 / (millis() - lastMillis);  // Factor to convert counts to RPM
   // Calculate RPM for each sensor and store in the rpms array
-  rpms[0] = (cA / 40.0) * factor;  // Convert counts to RPM for sensor 1
-  rpms[1] = (cB / 40.0) * factor;  // Convert counts to RPM for sensor 2
-  rpms[2] = (cC / 40.0) * factor;  // Convert counts to RPM for sensor 3
-  rpms[3] = (cD / 40.0) * factor;  // Convert counts to RPM for sensor 4
-  lastMillis = millis();  // Update lastMillis for the next RPM calculation
-  countA = 0;             // Reset counts for sensor 1
-  countB = 0;             // Reset counts for sensor 2
-  countC = 0;             // Reset counts for sensor 3
-  countD = 0;             // Reset counts for sensor 4
-  return rpms;            // Return the array of RPM values
+  rpms[0] = (cA / 40.0) * factor;  // Convert counts to RPMs
+  rpms[1] = (cB / 40.0) * factor;
+  rpms[2] = (cC / 40.0) * factor;
+  rpms[3] = (cD / 40.0) * factor; 
+  lastMillis = millis();           // Update lastMillis for the next RPM calculation
+  encoderCounts.countA = 0;                      // Reset counts for sensors
+  encoderCounts.countB = 0;                      
+  encoderCounts.countC = 0;                      
+  encoderCounts.countD = 0;                      
+  return rpms;                     
 }
 
-void receiveEvent(int howMany) {
-  if (howMany >= sizeof(commandData)) {
-    uint8_t *bytes = (uint8_t*)&commandData;
-    for (size_t i = 0; i < sizeof(commandData); i++) {
-      bytes[i] = Wire.read();
+void recvWithStartEndMarkers() {
+    static boolean recvInProgress = false;
+    static byte ndx = 0;
+    char startMarker = '<';
+    char endMarker = '>';
+    char rc;
+
+    while (Serial.available() > 0 && newData == false) {
+        rc = Serial.read();
+
+        if (recvInProgress == true) {
+            if (rc != endMarker) {
+                receivedChars[ndx] = rc;
+                ndx++;
+                if (ndx >= numChars) {
+                    ndx = numChars - 1;
+                }
+            }
+            else {
+                receivedChars[ndx] = '\0';
+                recvInProgress = false;
+                ndx = 0;
+                newData = true;
+            }
+        }
+
+        else if (rc == startMarker) {
+            recvInProgress = true;
+        }
     }
-    i2cDataReceived = true;
+}
+
+void parseData() {
+    char * strtokIndx;
+    strtokIndx = strtok(receivedChars, ",");
+    for (int i = 0; i < 4; i++) {
+        motorCommands[i] = atoi(strtokIndx);
+        strtokIndx = strtok(NULL, ",");
+    }
+}
+
+void getDirectionAndSpeed() {
+  for (int i = 0; i < 4; i++) {
+    if (motorCommands[i] > 0) {
+      lastDirection[i] = FORWARD;
+    } else if (motorCommands[i] < 0) {
+      lastDirection[i] = BACKWARD;
+    } else {
+      lastDirection[i] = RELEASE;
+    }
+  
+   // Set the setpoint to the absolute value of the received data
+  switch (i) {
+    case 0:
+      setpoint1 = abs(motorCommands[i]);
+      break;
+    case 1:
+      setpoint2 = abs(motorCommands[i]);
+      break;
+    case 2:
+      setpoint3 = abs(motorCommands[i]);
+      break;
+    case 3:
+      setpoint4 = abs(motorCommands[i]);
+      break;
+    }
   }
+}
+
+String getISOTimestamp(){
+  char buf[30];
+  sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", year(), month(), day(), hour(), minute(), second(), (int)millis() % 1000);
+  return String(buf);
+}
+
+uint16_t calculateHash(String &data) {
+  uint16_t hash = 0;
+  for (unsigned int i = 0; i < data.length(); i++) {
+    hash = ((hash << 5) + hash) + char(data[i]);
+  }
+  return hash;
+}
+
+void readGyroData(float &x, float &y, float &z) {
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+  x = g.gyro.x;
+  y = g.gyro.y;
+  z = g.gyro.z;
+}
+
+void sendSerialData(float* rpms) {
+  
+  float gyroX, gyroY, gyroZ;
+  readGyroData(gyroX, gyroY, gyroZ);
+  
+  String timestamp = getISOTimestamp();
+  
+  String dataString = "ODO," + timestamp + "," +
+                      String(rpms[0]) + "," + String(rpms[1]) + "," +
+                      String(rpms[2]) + "," + String(rpms[3]) + "," +
+                      String(gyroX, 4) + "," + String(gyroY, 4) + "," +
+                      String(gyroZ, 4);
+  
+  Serial.print(dataString);
+  uint16_t hash = calculateHash(dataString);
+  
+  Serial.println("," + String(hash));
+  // Serial.println(">GyroX: " + String(gyroX, 4));
+  // Serial.println(">GyroY: " + String(gyroY, 4));
+  // Serial.println(">GyroZ: " + String(gyroZ, 4));
 }
