@@ -102,7 +102,8 @@ void readMPU(Vec3 &accel, Vec3 &gyro, float &temp){
 }
 String getISOTimestamp(){
   char buf[30];
-  sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", year(), month(), day(), hour(), minute(), second(), (int)millis() % 1000);
+  unsigned long ms = millis() % 1000;
+  sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d.%03luZ", year(), month(), day(), hour(), minute(), second(), ms);
   return String(buf);
 }
 
